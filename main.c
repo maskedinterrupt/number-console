@@ -51,7 +51,9 @@ unsigned char display_buffer[7];
 
 enum Segments { SEG_A, SEG_B, SEG_C, SEG_D, SEG_E, SEG_F, SEG_G, SEG_DP };
 
-int update_display;
+int update_display, i_trig;
+unsigned int timer_count;
+
 
 void set(short digit, unsigned char value)
 {
@@ -64,6 +66,8 @@ void set(short digit, unsigned char value)
 	}
 
 }
+
+#define D1 &bar[0]
 
 /*
  * main.c
@@ -78,6 +82,14 @@ int main(void)
 	short * const d6 = &bar[40];
 	short * const d7 = &bar[48];
 
+
+	// Set up Watchdog Timer
+	WDTCTL = WDTPW + WDTHOLD;                 // Stop WDT
+	//WDTCTL = WDT_ARST_1000;
+
+
+
+	//TODO: Change this mapping to be in non-volatile storage
 	shift[0] = &d1[SEG_A];		// pin 1
 	shift[1] = &d1[SEG_B];		// pin 2
 	shift[2] = &d1[SEG_C];		// pin 3
@@ -159,13 +171,8 @@ int main(void)
 
 	mode = 0;
 	update_display = 1;
+	i_trig = 0;
 
-
-	// Set up Watchdog Timer
-  WDTCTL = WDTPW + WDTHOLD;                 // Stop WDT
-
-  // Set up Timer A
-  TACTL = TASSEL_1 + MC_1 + TAIE;           // ACLK, contmode, interrupt
 
 
   BCSCTL1 |= DIVA_1;                        // ACLK/2
@@ -182,7 +189,6 @@ int main(void)
 		*shift[ii] = 0;
 	}
 
-  //__enable_interrupt();                     // Enable interrupts.
 
 	  display_buffer[0] = 15;
 	  display_buffer[1] = 15;
@@ -203,170 +209,182 @@ int main(void)
 	  debounce = 100;
 
 
+		// Set up Timer A
+		TACTL = TASSEL_1 + MC_2 + TAIE;           // ACLK, contmode, interrupt
+		TACCR0 = 32;
+		TACCTL0 = CCIE;							// Enable TimerA CCR0 interrupt
+
+		__enable_interrupt();                     // Enable interrupts.
+
+
   /* Main Application Loop */
   while(1)
   {
 	  unsigned int jj;
+
+	  // Tickle Watchdog
+	  // WDTCTL = WDT_ARST_1000;
 
 	  if ( update_display )
 	  {
 		  updateDisplay();
 	  }
 
+	  last_key = key_pressed;
+	  key_pressed = y0_key = y1_key = y2_key = 15;
 
-	  for ( jj = 0; jj < 50; jj++ )
+
+	  // scan column 0
+	  P1OUT |= KEYPAD_Y0;
+	  if ( KEYPAD_X_IN == KEYPAD_X0 ) y0_key = 1;
+	  if ( KEYPAD_X_IN == KEYPAD_X1 ) y0_key = 4;
+	  if ( KEYPAD_X_IN == KEYPAD_X2 ) y0_key = 7;
+	  if ( KEYPAD_X_IN == KEYPAD_X3 ) y0_key = 10;
+	  if ( KEYPAD_X_IN == KEYPAD_X4 ) y0_key = 12;
+	  P1OUT &= ~KEYPAD_Y0;
+
+	  // scan column 1
+	  P1OUT |= KEYPAD_Y1;
+	  if ( KEYPAD_X_IN == KEYPAD_X0 ) y1_key = 2;
+	  if ( KEYPAD_X_IN == KEYPAD_X1 ) y1_key = 5;
+	  if ( KEYPAD_X_IN == KEYPAD_X2 ) y1_key = 8;
+	  if ( KEYPAD_X_IN == KEYPAD_X3 ) y1_key = 11;
+	  if ( KEYPAD_X_IN == KEYPAD_X4 ) y0_key = 13;
+	  P1OUT &= ~KEYPAD_Y1;
+
+	  // scan column 2
+	  P1OUT |= KEYPAD_Y2;
+	  if ( KEYPAD_X_IN == KEYPAD_X0 ) y2_key = 3;
+	  if ( KEYPAD_X_IN == KEYPAD_X1 ) y2_key = 6;
+	  if ( KEYPAD_X_IN == KEYPAD_X2 ) y2_key = 0;
+	  if ( KEYPAD_X_IN == KEYPAD_X3 ) y2_key = 9;
+	  P1OUT &= ~KEYPAD_Y;
+
+
+	  // check for multiple keys
+	  if ( y0_key < 15 && y1_key == 15 && y2_key == 15 ) key_pressed = y0_key;
+	  if ( y1_key < 15 && y0_key == 15 && y2_key == 15 ) key_pressed = y1_key;
+	  if ( y2_key < 15 && y0_key == 15 && y1_key == 15 ) key_pressed = y2_key;
+
+	  if ( key_pressed != last_key )
 	  {
-		  last_key = key_pressed;
-		  key_pressed = y0_key = y1_key = y2_key = 15;
+		  debounce = 3;
+	  }
+	  else if ( debounce > 0 && key_pressed < 15 )
+	  {
+		  --debounce;
+	  }
 
+	  if ( debounce == 0 )
+	  {
+		  debounce = -1;
 
-		  // scan column 0
-		  P1OUT |= KEYPAD_Y0;
-		  if ( KEYPAD_X_IN == KEYPAD_X0 ) y0_key = 1;
-		  if ( KEYPAD_X_IN == KEYPAD_X1 ) y0_key = 4;
-		  if ( KEYPAD_X_IN == KEYPAD_X2 ) y0_key = 7;
-		  if ( KEYPAD_X_IN == KEYPAD_X3 ) y0_key = 10;
-		  if ( KEYPAD_X_IN == KEYPAD_X4 ) y0_key = 12;
-		  P1OUT &= ~KEYPAD_Y0;
+		  // trigger display update
+		  update_display = 1;
 
-		  // scan column 1
-		  P1OUT |= KEYPAD_Y1;
-		  if ( KEYPAD_X_IN == KEYPAD_X0 ) y1_key = 2;
-		  if ( KEYPAD_X_IN == KEYPAD_X1 ) y1_key = 5;
-		  if ( KEYPAD_X_IN == KEYPAD_X2 ) y1_key = 8;
-		  if ( KEYPAD_X_IN == KEYPAD_X3 ) y1_key = 11;
-		  if ( KEYPAD_X_IN == KEYPAD_X4 ) y0_key = 13;
-		  P1OUT &= ~KEYPAD_Y1;
-
-		  // scan column 2
-		  P1OUT |= KEYPAD_Y2;
-		  if ( KEYPAD_X_IN == KEYPAD_X0 ) y2_key = 3;
-		  if ( KEYPAD_X_IN == KEYPAD_X1 ) y2_key = 6;
-		  if ( KEYPAD_X_IN == KEYPAD_X2 ) y2_key = 0;
-		  if ( KEYPAD_X_IN == KEYPAD_X3 ) y2_key = 9;
-		  P1OUT &= ~KEYPAD_Y;
-
-
-		  // check for multiple keys
-		  if ( y0_key < 15 && y1_key == 15 && y2_key == 15 ) key_pressed = y0_key;
-		  if ( y1_key < 15 && y0_key == 15 && y2_key == 15 ) key_pressed = y1_key;
-		  if ( y2_key < 15 && y0_key == 15 && y1_key == 15 ) key_pressed = y2_key;
-
-		  if ( key_pressed != last_key )
+		  // normal number button pressed
+		  if ( key_pressed < 10 )
 		  {
-			  debounce = 100;
-		  }
-		  else if ( debounce > 0 && key_pressed < 15 )
-		  {
-			  --debounce;
-		  }
-
-		  if ( debounce == 0 )
-		  {
-			  --debounce;
-
-			  // trigger display update
-			  update_display = 1;
-
-			  // normal number button pressed
-			  if ( key_pressed < 10 )
+			  if ( mode == 1 )
 			  {
-				  if ( mode == 1 )
-				  {
-					  // clear display and start over if latch button has been pressed
-					  display_buffer[6] = 15;
-					  display_buffer[5] = 15;
-					  display_buffer[4] = 15;
-					  display_buffer[3] = 15;
-				  }
-
-				  // reset latch checker
-				   mode = 0;
-
-				  // shift buffer down one
-				  display_buffer[6] = display_buffer[5];
-				  display_buffer[5] = display_buffer[4];
-				  display_buffer[4] = display_buffer[3];
-
-				  // insert new value into buffer
-				  display_buffer[3] = key_pressed;
+				  // clear display and start over if latch button has been pressed
+				  display_buffer[6] = 15;
+				  display_buffer[5] = 15;
+				  display_buffer[4] = 15;
+				  display_buffer[3] = 15;
 			  }
-			  // clear (star) button pressed
-			  else if ( key_pressed == 10 )
+
+			  // reset latch checker
+			   mode = 0;
+
+			  // shift buffer down one
+			  display_buffer[6] = display_buffer[5];
+			  display_buffer[5] = display_buffer[4];
+			  display_buffer[4] = display_buffer[3];
+
+			  // insert new value into buffer
+			  display_buffer[3] = key_pressed;
+		  }
+		  // clear (star) button pressed
+		  else if ( key_pressed == 10 )
+		  {
+			  display_buffer[3] = 15;
+			  display_buffer[4] = 15;
+			  display_buffer[5] = 15;
+			  display_buffer[6] = 15;
+			  mode = 0;
+		  }
+
+		  // backspace (pound) button pressed
+		  else if ( key_pressed == 11 )
+		  {
+			  display_buffer[3] = display_buffer[4];
+			  display_buffer[4] = display_buffer[5];
+			  display_buffer[5] = display_buffer[6];
+			  display_buffer[6] = 15;
+			  mode = 0;
+		  }
+		  // set button (white) pressed
+		  else if ( key_pressed == 12 )
+		  {
+			  if ( display_buffer[3] != 15 )
+			  {
+				  display_buffer[0] = display_buffer[3];
+				  display_buffer[1] = display_buffer[4];
+				  display_buffer[2] = display_buffer[5];
+
+				  display_buffer[3] = 15;
+				  display_buffer[4] = 15;
+				  display_buffer[5] = 15;
+				  display_buffer[6] = 15;
+			  }
+
+			  mode = 1;
+		  }
+		  // clear button (black) pressed
+		  else if ( key_pressed == 13 )
+		  {
+			  // clear both displays if top is already clear
+			  if ( display_buffer[0] == 15 )
 			  {
 				  display_buffer[3] = 15;
 				  display_buffer[4] = 15;
 				  display_buffer[5] = 15;
 				  display_buffer[6] = 15;
-				  mode = 0;
 			  }
 
-			  // backspace (pound) button pressed
-			  else if ( key_pressed == 11 )
+			  // bring the number down if the bottom is blank
+			  if ( display_buffer[3] == 15 )
 			  {
-				  display_buffer[3] = display_buffer[4];
-				  display_buffer[4] = display_buffer[5];
-				  display_buffer[5] = display_buffer[6];
+				  display_buffer[3] = display_buffer[0];
+				  display_buffer[4] = display_buffer[1];
+				  display_buffer[5] = display_buffer[2];
 				  display_buffer[6] = 15;
-				  mode = 0;
-			  }
-			  // set button (white) pressed
-			  else if ( key_pressed == 12 )
-			  {
-				  if ( display_buffer[3] != 15 )
-				  {
-					  display_buffer[0] = display_buffer[3];
-					  display_buffer[1] = display_buffer[4];
-					  display_buffer[2] = display_buffer[5];
-
-					  display_buffer[3] = 15;
-					  display_buffer[4] = 15;
-					  display_buffer[5] = 15;
-					  display_buffer[6] = 15;
-				  }
-
-				  mode = 1;
-			  }
-			  // clear button (black) pressed
-			  else if ( key_pressed == 13 )
-			  {
-				  // clear both displays if top is already clear
-				  if ( display_buffer[0] == 15 )
-				  {
-					  display_buffer[3] = 15;
-					  display_buffer[4] = 15;
-					  display_buffer[5] = 15;
-					  display_buffer[6] = 15;
-				  }
-
-				  // bring the number down if the bottom is blank
-				  if ( display_buffer[3] == 15 )
-				  {
-					  display_buffer[3] = display_buffer[0];
-					  display_buffer[4] = display_buffer[1];
-					  display_buffer[5] = display_buffer[2];
-					  display_buffer[6] = 15;
-				  }
-
-				  display_buffer[0] = 15;
-				  display_buffer[1] = 15;
-				  display_buffer[2] = 15;
-
-				  mode = 1;
 			  }
 
-			  // update display
-			  for ( jj = 0; jj < 7; jj++ )
-			  {
-				  set(jj, display_buffer[jj]);
-			  }
+			  display_buffer[0] = 15;
+			  display_buffer[1] = 15;
+			  display_buffer[2] = 15;
 
+			  mode = 1;
 		  }
+
+		  // update display
+		  for ( jj = 0; jj < 7; jj++ )
+		  {
+			  set(jj, display_buffer[jj]);
+		  }
+
 	  }
 
+	  timer_count = TAR;
 	  __bis_SR_register(LPM3_bits + GIE);        // LPM0 with interrupts enabled
 
-   }
+	  __no_operation();
+	  __no_operation();
+	  __no_operation();
+
+   } // continuous while loop
 
   return 0;
 }
@@ -374,13 +392,25 @@ int main(void)
 // Interrupt Service Routines
 
 // Timer_A3 Interrupt Vector (TAIV) handler
-#pragma vector=TIMER0_A1_VECTOR
-__interrupt void Timer_A(void)
+#pragma vector=TIMER0_A0_VECTOR
+__interrupt void Timer_A_ISR(void)
 {
+	// increment interval by 2 ms
+	TACCR0 += 32;
+
+	// pwm drive displays
+	SHIFT_OUT ^= SHIFT_EN;
+
 	// Clear LPM3 so main loop runs again
 	__bic_SR_register_on_exit(LPM3_bits);
 }
 
+#pragma vector=TIMER0_A1_VECTOR
+__interrupt void Timer_A1_ISR(void)
+{
+	// clear interrupt flag
+	int interrupt_value = TAIV;
+}
 
 void updateDisplay()
 {
